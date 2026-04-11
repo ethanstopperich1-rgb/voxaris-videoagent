@@ -224,12 +224,21 @@ module.exports = async (req, res) => {
       custom_greeting: greeting,
       conversational_context: fullContext,
       callback_url: callbackUrl,
+      // Tavus 2026 security upgrade — require_auth makes the WebRTC room
+      // private and returns a short-lived meeting_token the client must
+      // append to the URL. Without this, the conversation_url is a public
+      // gateway and anyone with the link can join the live candidate session.
+      require_auth: true,
       properties: { ...config.conversationDefaults },
     };
 
     const tavus = await tavusCreate(tavusBody);
     const conversationId = tavus.conversation_id;
-    const conversationUrl = tavus.conversation_url;
+    // If Tavus returned a meeting_token, append it to the URL so the
+    // candidate's browser authenticates into the room at transport layer.
+    const conversationUrl = tavus.meeting_token
+      ? `${tavus.conversation_url}?t=${tavus.meeting_token}`
+      : tavus.conversation_url;
 
     const seed = {
       conversation_id: conversationId,

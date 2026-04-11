@@ -669,6 +669,29 @@
       let completedSet = new Set();
       let disqualified = false;
       let terminated = false;
+      let sessionStartedAt = null;
+
+      // Redirect to the completion page with session summary as query params
+      function redirectToComplete() {
+        if (!conversationId) return;
+        const durationSec = sessionStartedAt
+          ? Math.floor((Date.now() - sessionStartedAt) / 1000)
+          : 0;
+        const q = new URLSearchParams({
+          conversation_id: conversationId,
+          candidate_name: params.candidate_name || "",
+          role: params.role || "",
+          duration_sec: String(durationSec),
+        });
+        if (disqualified) q.set("disqualified", "1");
+        // Leave the Daily room cleanly before navigating
+        try {
+          if (callObject) callObject.leave().catch(() => {});
+        } catch (_) {}
+        setTimeout(() => {
+          location.href = "/complete?" + q.toString();
+        }, 800);
+      }
 
       // Stepper definition — 9 meaningful stages.
       const STEPS = [
@@ -785,19 +808,22 @@
             terminated = true;
             showTerminalBanner(
               "success",
-              "Interview complete — a recruiter will be in touch within 1 business day."
+              "Interview complete — redirecting to your summary page..."
             );
             clearInterval(pollTimer);
+            redirectToComplete();
           } else if (disqualified || session.status === "disqualified") {
             terminated = true;
             showTerminalBanner(
               "declined",
-              "Thanks for your time. Unfortunately we can only proceed with candidates who are US-authorized to work."
+              "Thanks for your time. Redirecting..."
             );
             clearInterval(pollTimer);
+            redirectToComplete();
           } else if (session.status === "ended") {
             terminated = true;
             clearInterval(pollTimer);
+            redirectToComplete();
           }
         } catch (e) {
           // transient — swallow
@@ -861,6 +887,7 @@
           callObject
             .on("joined-meeting", () => {
               hideStartOverlay();
+              sessionStartedAt = Date.now();
               const parts = callObject.participants();
               Object.values(parts).forEach((p) => {
                 if (!p.local) attachRemoteTracks(p);
@@ -874,6 +901,11 @@
               el("jordan-video").classList.remove("live");
               el("live-indicator").classList.remove("visible");
               if (pollTimer) clearInterval(pollTimer);
+              // Daily session ended — redirect to completion page
+              if (!terminated) {
+                terminated = true;
+                redirectToComplete();
+              }
             })
             .on("error", (e) => {
               console.error("[daily] error:", e);

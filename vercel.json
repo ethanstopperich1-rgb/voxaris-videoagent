@@ -20,6 +20,7 @@
     { "source": "/realty", "destination": "/realty-embed.html" },
     { "source": "/staffing", "destination": "/staffing-embed.html" },
     { "source": "/apply", "destination": "/apply.html" },
+    { "source": "/complete", "destination": "/complete.html" },
     { "source": "/realty-simple", "destination": "/realty.html" },
     { "source": "/staffing-simple", "destination": "/staffing.html" }
   ]

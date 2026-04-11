@@ -128,12 +128,16 @@ module.exports = async (req, res) => {
       custom_greeting: greeting,
       conversational_context: conversationalContext,
       callback_url: callbackUrl,
+      // Tavus 2026 security upgrade — private room with meeting_token.
+      require_auth: true,
       properties: { ...config.conversationDefaults },
     };
 
     const tavus = await tavusCreate(tavusBody);
     const conversationId = tavus.conversation_id;
-    const conversationUrl = tavus.conversation_url;
+    const conversationUrl = tavus.meeting_token
+      ? `${tavus.conversation_url}?t=${tavus.meeting_token}`
+      : tavus.conversation_url;
 
     // Seed Live Sessions so frontend polling has something to read immediately.
     const seed = {

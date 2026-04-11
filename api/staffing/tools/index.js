@@ -62,11 +62,33 @@ async function processWebhookAsync(payload) {
     payload.conversation_id || payload.conversationId || null;
   if (!conversationId) return;
 
+  // Tavus 2026 Interactions Protocol — seq is a globally monotonic
+  // sequence number for out-of-order event reconciliation; turn_idx
+  // groups all events within the same conversational turn. Gemini
+  // audit finding: these must be captured for legally defensible
+  // chronological reconstruction.
+  const seq = payload.seq ?? null;
+  const turnIdx = payload.turn_idx ?? null;
+
   const existing = (await getSession(conversationId)) || {
     conversation_id: conversationId,
     vertical: "staffing",
     objectives_completed: [],
+    event_log: [],
   };
+
+  // Append this event to a lightweight per-session event log so the
+  // seq+turn_idx ordering is auditable later.
+  const eventLog = Array.isArray(existing.event_log) ? existing.event_log : [];
+  if (seq !== null) {
+    eventLog.push({
+      seq,
+      turn_idx: turnIdx,
+      event_type: payload.event_type || payload.objective_name || payload.tool_name || payload.guardrail_name || "unknown",
+      received_at: new Date().toISOString(),
+    });
+    existing.event_log = eventLog.slice(-50); // cap at last 50 events per session
+  }
 
   // Format B — lifecycle
   const eventType = payload.event_type || payload.type;
@@ -225,6 +247,19 @@ module.exports = async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
+  }
+
+  // Verify HMAC webhook signature (Gemini audit finding)
+  const verification = verifyWebhook(req);
+  if (!verification.ok) {
+    console.warn("[staffing/tools] webhook signature rejected:", verification.reason);
+    res.status(401).json({ ok: false, reason: verification.reason });
+    return;
+  }
+  if (verification.reason === "no-secret-configured") {
+    console.warn(
+      "[staffing/tools] TAVUS_WEBHOOK_SECRET not configured — accepting unverified webhook. Set the env var in production."
+    );
   }
 
   res.status(200).json({ ok: true });

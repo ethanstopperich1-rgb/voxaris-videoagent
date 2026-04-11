@@ -23,6 +23,7 @@ const {
 } = require("../../../shared/google-sheets");
 const { triggerN8n } = require("../../../shared/n8n-trigger");
 const { logRealtySession } = require("../../../realty/lib/sheets-logger");
+const { verifyWebhook } = require("../../../shared/webhook-verify");
 
 const TERMINAL_OBJECTIVES = new Set(["closing_confirmed"]);
 const BOOK_TOUR_OBJECTIVES = new Set(["schedule_agent_call"]);
@@ -188,6 +189,19 @@ module.exports = async (req, res) => {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
     return;
+  }
+
+  // Verify HMAC webhook signature (Gemini audit finding)
+  const verification = verifyWebhook(req);
+  if (!verification.ok) {
+    console.warn("[realty/tools] webhook signature rejected:", verification.reason);
+    res.status(401).json({ ok: false, reason: verification.reason });
+    return;
+  }
+  if (verification.reason === "no-secret-configured") {
+    console.warn(
+      "[realty/tools] TAVUS_WEBHOOK_SECRET not configured — accepting unverified webhook."
+    );
   }
 
   // ACK immediately, do the work after.
