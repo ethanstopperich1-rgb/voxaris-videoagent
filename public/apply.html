@@ -646,6 +646,18 @@
             agency: URL_AGENCY,
             prefetched: "1",
           });
+          // Pass the Daily meeting token through separately — Daily.js
+          // requires it as a distinct `token` param in join(), not baked
+          // into the URL. Stash it in sessionStorage since it's short-lived
+          // and shouldn't sit in the URL bar.
+          if (data.meeting_token) {
+            try {
+              sessionStorage.setItem(
+                "voxaris_meeting_token_" + data.conversation_id,
+                data.meeting_token
+              );
+            } catch (_) {}
+          }
           location.href = `/staffing-embed.html?${params.toString()}`;
         } catch (err) {
           console.error("apply submit failed:", err);

@@ -135,9 +135,11 @@ module.exports = async (req, res) => {
 
     const tavus = await tavusCreate(tavusBody);
     const conversationId = tavus.conversation_id;
-    const conversationUrl = tavus.meeting_token
-      ? `${tavus.conversation_url}?t=${tavus.meeting_token}`
-      : tavus.conversation_url;
+    // With require_auth: true, return url + token separately so Daily.js
+    // can consume them as { url, token } in join(). Concatenating `?t=` into
+    // the URL breaks the authenticated join silently.
+    const conversationUrl = tavus.conversation_url;
+    const meetingToken = tavus.meeting_token || null;
 
     // Seed Live Sessions so frontend polling has something to read immediately.
     const seed = {
@@ -163,6 +165,7 @@ module.exports = async (req, res) => {
       ok: true,
       conversation_id: conversationId,
       conversation_url: conversationUrl,
+      meeting_token: meetingToken,
       listing_address: listingAddress,
       photo_map: photoMap || { all: [] },
       status: tavus.status || "created",

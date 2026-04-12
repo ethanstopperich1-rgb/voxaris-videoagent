@@ -234,11 +234,14 @@ module.exports = async (req, res) => {
 
     const tavus = await tavusCreate(tavusBody);
     const conversationId = tavus.conversation_id;
-    // If Tavus returned a meeting_token, append it to the URL so the
-    // candidate's browser authenticates into the room at transport layer.
-    const conversationUrl = tavus.meeting_token
-      ? `${tavus.conversation_url}?t=${tavus.meeting_token}`
-      : tavus.conversation_url;
+    // With require_auth: true, Tavus returns conversation_url + meeting_token
+    // separately. Daily.js `join()` expects them as separate params
+    // ({ url, token }), NOT concatenated as a query string — passing
+    // `https://room?t=TOKEN` to Daily fails silently and the join errors
+    // out. We therefore return them as two fields and let the client pass
+    // them through cleanly.
+    const conversationUrl = tavus.conversation_url;
+    const meetingToken = tavus.meeting_token || null;
 
     const seed = {
       conversation_id: conversationId,
@@ -270,6 +273,7 @@ module.exports = async (req, res) => {
       ok: true,
       conversation_id: conversationId,
       conversation_url: conversationUrl,
+      meeting_token: meetingToken,
       role: roleData.title,
       role_details: {
         key: role,

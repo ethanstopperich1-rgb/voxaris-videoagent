@@ -738,6 +738,7 @@
 
       let conversationId = null;
       let conversationUrl = null;
+      let meetingToken = null;
       let callObject = null;
       let pollTimer = null;
       let completedSet = new Set();
@@ -983,12 +984,17 @@
               showError((e && e.errorMsg) || "Call error");
             });
 
-          await callObject.join({
+          // Daily.js requires url + token as separate params when the room
+          // is authenticated (Tavus require_auth: true). Passing the token
+          // inside the URL query string does NOT work and fails silently.
+          const joinOpts = {
             url: conversationUrl,
             userName: params.candidate_name,
             startVideoOff: false,
             startAudioOff: false,
-          });
+          };
+          if (meetingToken) joinOpts.token = meetingToken;
+          await callObject.join(joinOpts);
 
           setTimeout(() => {
             const v = el("jordan-video");
@@ -1015,6 +1021,17 @@
         if (prefetched && prefetchedUrl && prefetchedId) {
           conversationId = prefetchedId;
           conversationUrl = prefetchedUrl;
+          // Pick up the meeting token stashed by apply.html (sessionStorage
+          // keeps it out of the URL bar). If it's missing we fall back to
+          // joining without a token — Tavus will reject it if require_auth
+          // is on, which surfaces a real error to the user.
+          try {
+            meetingToken = sessionStorage.getItem(
+              "voxaris_meeting_token_" + prefetchedId
+            );
+          } catch (_) {
+            meetingToken = null;
+          }
 
           try {
             const r = await fetch(
@@ -1068,6 +1085,7 @@
 
           conversationId = data.conversation_id;
           conversationUrl = data.conversation_url;
+          meetingToken = data.meeting_token || null;
 
           renderPanel(data);
           el("panel").classList.add("visible");
