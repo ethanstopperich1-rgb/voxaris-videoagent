@@ -282,7 +282,7 @@ function buildPersonaPayload() {
             function: {
               name: "save_candidate_screening",
               description:
-                "Save structured candidate screening data collected during the interview. Call this whenever you've confirmed any of the fields below so the recruiter has a structured profile at the end of the call.",
+                "Save structured candidate screening data. CALL THIS TOOL IMMEDIATELY AFTER the candidate has verbally confirmed ANY of the fields listed below — do not wait until the end of the call. Trigger conditions: (1) after you confirm full name, email, and phone; (2) after you confirm work authorization; (3) after you confirm years of experience or most recent employer; (4) after you confirm certifications; (5) after you confirm availability (evenings/weekends/start date); (6) after you confirm physical requirements. Each call should include every field you currently have, not just the newest one — the tool upserts. Do NOT call this tool with empty args, do NOT call it more than once per confirmed field, and do NOT call it before the candidate has actually said the data out loud.",
               parameters: {
                 type: "object",
                 properties: {
@@ -331,7 +331,7 @@ function buildPersonaPayload() {
                       "Free-form notes for recruiter about standout moments, concerns, or follow-ups",
                   },
                 },
-                required: ["full_name"],
+                required: ["full_name", "email", "phone", "work_authorized"],
               },
             },
           },
@@ -390,7 +390,10 @@ const config = {
     return process.env.TAVUS_STAFFING_REPLICA_ID || "";
   },
   conversationDefaults: {
-    max_call_duration: 1200,
+    // Hard cap at 12 minutes. Jordan's screening is designed to run 8-10 min;
+    // 720s gives slack for disclosure + closing without paying for runaway
+    // sessions. Raised from 1200 after Gemini audit finding 22.
+    max_call_duration: 720,
     participant_left_timeout: 45,
     participant_absent_timeout: 240,
     enable_recording: true,

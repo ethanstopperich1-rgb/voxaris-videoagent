@@ -283,7 +283,7 @@ function buildPersonaPayload() {
             function: {
               name: "save_buyer_profile",
               description:
-                "Save structured buyer profile data collected during the virtual tour. Call this whenever you've confirmed any of the fields below.",
+                "Save structured buyer profile data captured during the virtual showing. CALL THIS TOOL IMMEDIATELY AFTER the buyer has verbally confirmed ANY of the fields below — do not wait until the end of the call. Trigger conditions: (1) after the buyer states their top priorities; (2) after the buyer shares financing status or timeline; (3) after the buyer reacts strongly to a feature (capture in notes); (4) after the buyer confirms interest level or a concern; (5) after the buyer confirms full name, email, or phone. Each call should include every field you currently have, not just the newest — the tool upserts. Do NOT call this with empty args, do NOT call before the buyer has actually said the data out loud.",
               parameters: {
                 type: "object",
                 properties: {
@@ -336,7 +336,7 @@ function buildPersonaPayload() {
                       "Free-form notes for the listing agent about the buyer's reactions",
                   },
                 },
-                required: ["full_name"],
+                required: ["full_name", "email", "phone"],
               },
             },
           },
@@ -395,7 +395,10 @@ const config = {
     return process.env.TAVUS_REALTY_REPLICA_ID || "";
   },
   conversationDefaults: {
-    max_call_duration: 1800,
+    // Hard cap at 12 minutes. Aria's showing flow targets 8-10 min; 720s
+    // leaves slack for disclosure + closing. Raised from 1800 after Gemini
+    // audit finding 22 (runaway-session cost control).
+    max_call_duration: 720,
     participant_left_timeout: 60,
     participant_absent_timeout: 300,
     enable_recording: true,

@@ -135,18 +135,40 @@ async function processWebhookAsync(payload) {
     return;
   }
 
-  // Format A — legacy tool call
+  // Format A — tool call (save_buyer_profile, bookTour, legacy updateBuyerProfile)
   if (payload.tool_name) {
     const { sendToolResult } = require("../../../shared/tavus-client");
-    const params = payload.parameters || payload.arguments || {};
+    const rawParams = payload.parameters || payload.arguments || {};
+
+    // Allowlist filter so a hallucinated tool arg can't overwrite conversation
+    // state fields like status, event_log, or conversation_id.
+    const ALLOWED_BUYER_FIELDS = [
+      "full_name", "email", "phone", "financing_status", "timeline",
+      "top_priority_1", "top_priority_2", "interest_level", "main_concern",
+      "tour_requested", "preferred_date", "preferred_time", "visit_type",
+      "notes",
+    ];
+    const params = {};
+    const fieldsSaved = [];
+    for (const k of Object.keys(rawParams)) {
+      if (ALLOWED_BUYER_FIELDS.includes(k)) {
+        params[k] = rawParams[k];
+        fieldsSaved.push(k);
+      }
+    }
     const merged = { ...existing, ...params };
 
-    if (payload.tool_name === "updateBuyerProfile") {
+    if (
+      payload.tool_name === "save_buyer_profile" ||
+      payload.tool_name === "updateBuyerProfile"
+    ) {
       await Promise.all([
         putSession(conversationId, merged),
         sendToolResult(conversationId, payload.tool_call_id, {
           success: true,
-          message: "Profile updated.",
+          fields_saved: fieldsSaved,
+          next_action: "continue_showing",
+          message: `Got it — saved ${fieldsSaved.length} field${fieldsSaved.length === 1 ? "" : "s"}. Keep going with the walkthrough.`,
         }),
       ]);
       return;
@@ -168,8 +190,10 @@ async function processWebhookAsync(payload) {
         }),
         sendToolResult(conversationId, payload.tool_call_id, {
           success: true,
+          fields_saved: fieldsSaved,
+          next_action: "tour_booked",
           message:
-            "I've submitted your tour request! You'll receive a confirmation email within a few minutes with the details.",
+            "I've submitted your tour request — you'll get a confirmation email in a few minutes with the details.",
         }),
       ]);
       return;

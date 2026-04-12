@@ -374,6 +374,16 @@
     <script>
       const qs = new URLSearchParams(location.search);
       const candidateName = qs.get("name") || qs.get("candidate_name");
+
+      // Gemini audit finding 35 — overwrite the /staffing entry in the
+      // history stack so a back-button press lands on /apply (or /) instead
+      // of the now-ended Daily.js room. We keep the query params because the
+      // summary card reads them, but the URL path collapses to /complete.
+      try {
+        const cleanUrl = "/complete" + location.search;
+        history.replaceState(null, "", cleanUrl);
+      } catch (_) {}
+
       const role = qs.get("role");
       const conversationId = qs.get("conversation_id");
       const disqualified = qs.get("disqualified") === "1";

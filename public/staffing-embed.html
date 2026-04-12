@@ -621,6 +621,58 @@
         color: #fca5a5;
       }
 
+      /* Live network + device status banner (reconnect, weak signal, camera denied) */
+      #status-banner {
+        position: absolute;
+        top: 16px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 40;
+        display: none;
+        max-width: min(560px, calc(100% - 32px));
+        padding: 10px 16px;
+        border-radius: 9999px;
+        font-family: var(--font-mono);
+        font-size: 11px;
+        font-weight: 500;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        text-align: center;
+        border: 1px solid var(--border);
+        background: rgba(14, 16, 20, 0.92);
+        color: var(--text-secondary);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        box-shadow: var(--shadow-card);
+      }
+      #status-banner.visible { display: block; }
+      #status-banner.warn {
+        border-color: rgba(255, 188, 51, 0.45);
+        background: rgba(255, 188, 51, 0.12);
+        color: #ffd67a;
+      }
+      #status-banner.error {
+        border-color: rgba(255, 99, 99, 0.5);
+        background: rgba(255, 99, 99, 0.14);
+        color: #ff9a9a;
+      }
+      #status-banner::before {
+        content: "";
+        display: inline-block;
+        width: 6px;
+        height: 6px;
+        margin-right: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        box-shadow: 0 0 10px currentColor;
+        vertical-align: middle;
+        animation: pulse-dot 1.6s ease-in-out infinite;
+      }
+      @keyframes pulse-dot {
+        0%, 100% { opacity: 0.45; transform: scale(0.9); }
+        50% { opacity: 1; transform: scale(1.1); }
+      }
+
       /* Mobile */
       @media (max-width: 880px) {
         #app {
@@ -723,6 +775,10 @@
 
         <div id="terminal-banner"></div>
       </div>
+
+      <!-- Live network + device status banner. Positioned absolute over the
+           video stage. Hidden by default; JS toggles visible/warn/error. -->
+      <div id="status-banner" role="status" aria-live="polite"></div>
     </div>
 
     <script>
@@ -791,6 +847,63 @@
       function hideStartOverlay() {
         el("start-overlay").classList.add("hidden");
         el("live-indicator").classList.add("visible");
+      }
+
+      // ──────────────────────────────────────────────────────────────
+      //  Status banner — reconnect / weak signal / device errors
+      // ──────────────────────────────────────────────────────────────
+      function showStatus(kind, text) {
+        const b = el("status-banner");
+        if (!b) return;
+        b.classList.remove("warn", "error");
+        if (kind) b.classList.add(kind);
+        b.textContent = text;
+        b.classList.add("visible");
+      }
+      function hideStatus() {
+        const b = el("status-banner");
+        if (b) b.classList.remove("visible");
+      }
+
+      // Pre-flight camera + mic check. Runs before we touch Daily.js so a
+      // denied getUserMedia surfaces a friendly message instead of a silent
+      // "left-meeting" redirect. Releases the tracks immediately — Daily
+      // grabs its own. Gemini audit finding 19.
+      async function preflightMedia() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error(
+            "This browser doesn't support camera + microphone access. Try Chrome, Safari, or Edge on desktop or mobile."
+          );
+        }
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true,
+          });
+          // Release immediately so Daily can claim them cleanly
+          stream.getTracks().forEach((t) => t.stop());
+        } catch (err) {
+          const name = (err && err.name) || "";
+          if (name === "NotAllowedError" || name === "SecurityError") {
+            throw new Error(
+              "Camera and microphone permission was denied. Click the lock icon in your browser's address bar, allow camera + mic, then reload this page to try again."
+            );
+          }
+          if (name === "NotFoundError" || name === "OverconstrainedError") {
+            throw new Error(
+              "No camera or microphone detected. Make sure a webcam and mic are connected, then reload this page."
+            );
+          }
+          if (name === "NotReadableError") {
+            throw new Error(
+              "Your camera or microphone is already in use by another app. Close Zoom, FaceTime, Meet, or any other video app and try again."
+            );
+          }
+          throw new Error(
+            "Couldn't access camera or microphone: " +
+              (err && err.message ? err.message : name || "unknown error")
+          );
+        }
       }
 
       // ──────────────────────────────────────────────────────────────
@@ -950,6 +1063,10 @@
             throw new Error("Daily.js failed to load");
           }
 
+          // Pre-flight — surfaces permission denials as friendly text before
+          // we enter the Daily.js join flow where errors go silent.
+          await preflightMedia();
+
           callObject = window.DailyIframe.createCallObject({
             audioSource: true,
             videoSource: true,
@@ -982,6 +1099,52 @@
             .on("error", (e) => {
               console.error("[daily] error:", e);
               showError((e && e.errorMsg) || "Call error");
+            })
+            // Gemini audit finding 19 — a denied/unplugged camera surfaces as
+            // a Daily `camera-error`. We downgrade to a banner instead of a
+            // hard error so the candidate can still hear Jordan.
+            .on("camera-error", (evt) => {
+              console.warn("[daily] camera-error:", evt);
+              const type = (evt && evt.errorMsg && evt.errorMsg.type) || "";
+              if (type === "permissions") {
+                showStatus(
+                  "error",
+                  "Camera / mic blocked — click the lock icon, allow, reload"
+                );
+              } else if (type === "not-found") {
+                showStatus("error", "No camera detected — check your device");
+              } else if (type === "in-use") {
+                showStatus(
+                  "error",
+                  "Camera busy — close Zoom / FaceTime and reload"
+                );
+              } else {
+                showStatus("error", "Camera error — audio-only mode");
+              }
+            })
+            // Gemini audit finding 20 — Daily fires quality updates with
+            // threshold: "good" | "low" | "very-low". We show a reconnect
+            // banner on "low" and an error banner on "very-low". When Daily
+            // fires `network-connection` type: reconnecting → we advertise
+            // the recovery attempt.
+            .on("network-quality-change", (evt) => {
+              const threshold = evt && evt.threshold;
+              if (threshold === "very-low") {
+                showStatus("error", "Weak signal — call may drop");
+              } else if (threshold === "low") {
+                showStatus("warn", "Signal is weak — audio may stutter");
+              } else {
+                hideStatus();
+              }
+            })
+            .on("network-connection", (evt) => {
+              const type = evt && evt.type;
+              if (type === "interrupted") {
+                showStatus("error", "Connection lost — reconnecting…");
+              } else if (type === "connected") {
+                showStatus("warn", "Reconnected");
+                setTimeout(hideStatus, 2200);
+              }
             });
 
           // Daily.js requires url + token as separate params when the room

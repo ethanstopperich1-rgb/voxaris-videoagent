@@ -19,6 +19,28 @@ const {
 } = require("../../../shared/google-sheets");
 const { triggerN8n } = require("../../../shared/n8n-trigger");
 const { logStaffingSession } = require("../../../staffing/lib/sheets-logger");
+const { verifyWebhook } = require("../../../shared/webhook-verify");
+
+// Fields the persona is allowed to save via updateCandidateProfile. Anything
+// outside this allowlist gets stripped before we merge into the session so a
+// hallucinated tool arg can't overwrite conversation_id or status.
+const ALLOWED_CANDIDATE_FIELDS = [
+  "full_name",
+  "email",
+  "phone",
+  "work_authorized",
+  "years_experience",
+  "most_recent_employer",
+  "certifications",
+  "has_certification",
+  "certification_name",
+  "available_evenings",
+  "available_weekends",
+  "earliest_start_date",
+  "confirmed_physical_requirements",
+  "notes",
+  "disqualified",
+];
 
 async function handleGet(req, res) {
   const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -187,21 +209,46 @@ async function processWebhookAsync(payload) {
     return;
   }
 
-  // Format A — legacy tool calls
+  // Format A — tool calls (save_candidate_screening, scheduleRecruiterCall, legacy updateCandidateProfile)
   if (payload.tool_name) {
     const { sendToolResult } = require("../../../shared/tavus-client");
-    const params = payload.parameters || payload.arguments || {};
+    const rawParams = payload.parameters || payload.arguments || {};
+
+    // Allowlist filter — strip anything the persona isn't allowed to set
+    // directly so a hallucinated arg can't overwrite conversation_id, status,
+    // event_log, etc. Anything outside ALLOWED_CANDIDATE_FIELDS is dropped.
+    const params = {};
+    const fieldsSaved = [];
+    for (const k of Object.keys(rawParams)) {
+      if (ALLOWED_CANDIDATE_FIELDS.includes(k)) {
+        params[k] = rawParams[k];
+        fieldsSaved.push(k);
+      }
+    }
+    // Coerce work_authorized to a real boolean-ish value
+    if (params.work_authorized !== undefined) {
+      const coerced = coerceBool(params.work_authorized);
+      if (coerced !== null) params.work_authorized = coerced;
+    }
     const merged = { ...existing, ...params };
 
-    if (payload.tool_name === "updateCandidateProfile") {
-      if (merged.disqualified === true || merged.work_authorized === false) {
+    if (
+      payload.tool_name === "save_candidate_screening" ||
+      payload.tool_name === "updateCandidateProfile"
+    ) {
+      // Disqualification branch — ineligible work auth is terminal.
+      if (merged.work_authorized === false || merged.disqualified === true) {
         merged.disqualified = true;
+        merged.status = "disqualified";
+        merged.completed_at = new Date().toISOString();
         await Promise.all([
           putSession(conversationId, merged),
           sendToolResult(conversationId, payload.tool_call_id, {
             success: true,
+            fields_saved: fieldsSaved,
+            next_action: "end_screening_ineligible",
             message:
-              "I understand, thanks for your time. Unfortunately we can only proceed with US-authorized workers.",
+              "I hear you — thanks for being upfront. Unfortunately we can only move forward with US-authorized candidates, so I'm going to wrap up here.",
           }),
         ]);
         return;
@@ -210,7 +257,9 @@ async function processWebhookAsync(payload) {
         putSession(conversationId, merged),
         sendToolResult(conversationId, payload.tool_call_id, {
           success: true,
-          message: "Profile updated.",
+          fields_saved: fieldsSaved,
+          next_action: "continue_screening",
+          message: `Got it — saved ${fieldsSaved.length} field${fieldsSaved.length === 1 ? "" : "s"}. Keep going with the next question.`,
         }),
       ]);
       return;
@@ -218,6 +267,8 @@ async function processWebhookAsync(payload) {
 
     if (payload.tool_name === "scheduleRecruiterCall") {
       merged.recruiter_call_scheduled = true;
+      merged.status = "completed";
+      merged.completed_at = new Date().toISOString();
       await Promise.all([
         putSession(conversationId, merged),
         triggerN8n(process.env.N8N_INTERVIEW_WEBHOOK, {
@@ -226,8 +277,10 @@ async function processWebhookAsync(payload) {
         }),
         sendToolResult(conversationId, payload.tool_call_id, {
           success: true,
+          fields_saved: fieldsSaved,
+          next_action: "closing_confirmed",
           message:
-            "You're all set! A recruiter will reach out within 1 business day. Thanks for your time today — good luck!",
+            "You're all set — a recruiter will reach out within 1 business day. Thanks for your time today, and best of luck!",
         }),
       ]);
       return;
