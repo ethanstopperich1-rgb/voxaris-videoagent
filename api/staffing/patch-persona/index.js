@@ -1,168 +1,93 @@
 /**
  * POST /api/staffing/patch-persona
  *
- * One-shot endpoint that PATCHes the existing Jordan persona (via JSON Patch
- * RFC 6902) to attach:
- *   1. The full Raven-1 perception block under /layers/perception
- *   2. The full 11-objective conversation_rules.objectives block under
- *      /conversation_rules/objectives (includes the work_authorization
- *      conditional branch: continue_screening vs end_screening_ineligible)
- *   3. The 4 Jordan guardrails under /conversation_rules/guardrails, with
- *      callback_url pointing at STAFFING_BASE_URL/api/staffing/tools
- *
- * After this runs, Tavus enforces objectives and guardrails at the API level
- * on every new Jordan conversation — not just via system prompt.
+ * One-shot endpoint that PATCHes the existing Jordan v2.0 persona on Tavus.
+ * Updates:
+ *   1. /layers/perception — v2.0 Raven-1 perception queries
+ *   2. /conversation_rules — v2.0 objectives (10) + guardrails (8)
+ *      (Currently returns 'Unknown field' — Tavus enforces via system_prompt
+ *       until they ship conversation_rules support. Code stays ready.)
  *
  * Run once after deploy:
  *   curl -X POST https://YOUR_DOMAIN/api/staffing/patch-persona
  *
- * Response: { ok, persona_id, patched_fields }
+ * Response: { ok, persona_id, patched_fields, warnings }
  */
 
 const { patchPersona } = require("../../../shared/tavus-client");
+const { config } = require("../../../staffing/config/staffing-config");
 
-const JORDAN_PERCEPTION = {
+// Pull v2.0 objectives and guardrails from the canonical staffing-config
+const JORDAN_OBJECTIVES = config.objectives;
+const JORDAN_GUARDRAILS = config.guardrails;
+
+// v2.0 Perception — updated queries, visual_tools emptied (removed
+// flag_unprofessional_setting per appearance_bias_prevention guardrail)
+const JORDAN_PERCEPTION_V2 = {
   perception_model: "raven-1",
   visual_awareness_queries: [
-    "Does the candidate appear nervous, calm, or confident based on posture and facial expression?",
-    "Is the candidate dressed professionally, casually, or informally for the interview?",
-    "Is the candidate maintaining eye contact with the camera or frequently looking away?",
-    "Is there anything in the background that appears unprofessional or distracting?",
+    "Does the candidate appear calm, nervous, or confident?",
+    "Is the candidate maintaining eye contact with the camera?",
+    "Is the candidate alone in the frame?",
   ],
   audio_awareness_queries: [
-    "Does the candidate sound confident and clear, or hesitant and uncertain?",
-    "Is the candidate speaking at a natural pace, or rushing and stumbling over words?",
-    "Does the candidate sound genuinely enthusiastic about the role, or disengaged?",
+    "Does the candidate sound confident, hesitant, or disengaged?",
+    "Is the candidate speaking clearly and at a natural pace?",
   ],
   perception_analysis_queries: [
-    "Overall, how would you rate the candidate's professional presentation on a scale of 1-10 based on visual appearance and setting?",
+    "Did the candidate's engagement and energy increase, decrease, or stay flat throughout the session?",
     "Were there moments where the candidate appeared visibly uncomfortable or evasive — if so, at what point in the conversation?",
-    "Did the candidate's energy and engagement increase, decrease, or stay flat throughout the session?",
-    "Was the candidate alone during the interview, or was anyone else present in the frame?",
-    "On a scale of 1-100, how often was the candidate maintaining direct eye contact with the camera?",
+    "Was the candidate alone during the entire interview, or was anyone else present at any point?",
+    "On a scale of 1-10, rate the candidate's overall communication clarity and confidence across the full session.",
+    "Summarize the candidate's emotional arc across the interview in 2-3 sentences.",
+  ],
+  visual_tools: [],
+  visual_tool_prompt: "",
+  audio_tool_prompt:
+    "You have two audio-triggered tools. Use candidate_strong_signal when a candidate sounds confident, articulate, and genuinely enthusiastic across multiple answers — this flags them for recruiter priority review. Use escalate_to_recruiter if the candidate becomes visibly or audibly distressed, discloses a protected characteristic that the AI must not explore, becomes confused about the interview process, or encounters any situation requiring human follow-up.",
+  audio_tools: [
+    {
+      type: "function",
+      function: {
+        name: "candidate_strong_signal",
+        parameters: {
+          type: "object",
+          required: ["standout_moment"],
+          properties: {
+            standout_moment: {
+              type: "string",
+              maxLength: 300,
+              description:
+                "The specific answer or moment that most stood out positively — what they said and why it indicates strong fit",
+            },
+          },
+        },
+        description:
+          "Trigger when candidate consistently sounds confident, articulate, and enthusiastic across multiple answers — indicates strong pipeline signal for recruiter priority review",
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "escalate_to_recruiter",
+        parameters: {
+          type: "object",
+          required: ["reason"],
+          properties: {
+            reason: {
+              type: "string",
+              maxLength: 300,
+              description:
+                "Why escalation is needed — candidate distress, protected class disclosure, technical issue, or situation requiring human judgment",
+            },
+          },
+        },
+        description:
+          "Trigger when candidate is distressed, discloses protected info, or encounters situation requiring human follow-up",
+      },
+    },
   ],
 };
-
-const JORDAN_OBJECTIVES = [
-  {
-    objective_name: "candidate_ready",
-    objective_prompt:
-      "Candidate has acknowledged the greeting and confirmed they are ready to begin",
-    output_variables: [],
-    next_required_objective: "get_candidate_info",
-  },
-  {
-    objective_name: "get_candidate_info",
-    objective_prompt:
-      "Confirm the candidate's full name, the role they applied for, and the best email address to reach them",
-    output_variables: ["full_name", "applied_role", "email"],
-    next_required_objective: "work_authorization",
-  },
-  {
-    objective_name: "work_authorization",
-    objective_prompt:
-      "Candidate has confirmed they are legally authorized to work in the United States",
-    output_variables: ["work_authorized"],
-    next_conditional_objectives: {
-      continue_screening:
-        "if candidate confirms they are authorized to work in the US",
-      end_screening_ineligible:
-        "if candidate indicates they are not currently authorized to work in the US",
-    },
-  },
-  {
-    objective_name: "end_screening_ineligible",
-    objective_prompt:
-      "Candidate has been informed the role requires US work authorization and the session has been concluded respectfully",
-    output_variables: [],
-  },
-  {
-    objective_name: "continue_screening",
-    objective_prompt:
-      "Candidate has confirmed work authorization and is ready to continue",
-    output_variables: [],
-    next_required_objective: "get_experience",
-  },
-  {
-    objective_name: "get_experience",
-    objective_prompt:
-      "Understand the candidate's relevant experience for the role — how many years, what type of venue, and most recent employer",
-    output_variables: ["years_experience", "venue_type", "most_recent_employer"],
-    next_required_objective: "get_certifications",
-  },
-  {
-    objective_name: "get_certifications",
-    objective_prompt:
-      "Determine whether the candidate holds any certifications relevant to this role (TIPS, ServSafe, forklift, CPR, HIPAA, etc.)",
-    output_variables: ["has_certification", "certification_name"],
-    next_required_objective: "get_availability",
-  },
-  {
-    objective_name: "get_availability",
-    objective_prompt:
-      "Get the candidate's availability for evening and weekend shifts and their earliest available start date",
-    output_variables: [
-      "available_evenings",
-      "available_weekends",
-      "earliest_start_date",
-    ],
-    next_required_objective: "physical_requirements",
-  },
-  {
-    objective_name: "physical_requirements",
-    objective_prompt:
-      "Candidate has confirmed they are able to meet the physical requirements of the role (standing, lifting, etc.)",
-    output_variables: ["confirmed_physical_requirements"],
-    next_required_objective: "candidate_questions",
-  },
-  {
-    objective_name: "candidate_questions",
-    objective_prompt:
-      "Candidate has been given the opportunity to ask questions about the role or the process, and any questions asked have been addressed or noted for recruiter follow-up",
-    output_variables: ["candidate_question_1", "candidate_question_2"],
-    next_required_objective: "closing_confirmed",
-  },
-  {
-    objective_name: "closing_confirmed",
-    objective_prompt:
-      "Candidate has been told what the next steps are (recruiter will follow up within 24 hours) and has acknowledged the end of the session",
-    output_variables: [],
-    confirmation_mode: "manual",
-  },
-];
-
-function buildJordanGuardrails(callbackUrl) {
-  return [
-    {
-      guardrail_name: "protected_class_question",
-      guardrail_prompt:
-        "Jordan asks or responds to questions about the candidate's age, race, religion, national origin, marital status, pregnancy, or disability status in a way that could constitute illegal pre-employment inquiry",
-      callback_url: callbackUrl,
-      modality: "verbal",
-    },
-    {
-      guardrail_name: "hiring_commitment_made",
-      guardrail_prompt:
-        "Jordan makes a direct offer of employment, guarantees placement, or commits to a specific pay rate not in the job context",
-      callback_url: callbackUrl,
-      modality: "verbal",
-    },
-    {
-      guardrail_name: "sensitive_data_requested",
-      guardrail_prompt:
-        "Jordan asks the candidate for their social security number, date of birth, government ID number, or banking information",
-      callback_url: callbackUrl,
-      modality: "verbal",
-    },
-    {
-      guardrail_name: "candidate_distress",
-      guardrail_prompt:
-        "Candidate expresses significant distress, frustration, or indicates they are in a difficult personal situation that is affecting the conversation",
-      callback_url: callbackUrl,
-      modality: "verbal",
-    },
-  ];
-}
 
 module.exports = async (req, res) => {
   if (req.method === "OPTIONS") {
@@ -189,39 +114,37 @@ module.exports = async (req, res) => {
     `https://${req.headers["x-forwarded-host"] || req.headers.host || "localhost"}`;
   const callbackUrl = `${baseUrl}/api/staffing/tools`;
 
-  // Same empirical finding as realty: only /layers/perception is accepted.
-  // conversation_rules is attempted as best-effort so this endpoint flips on
-  // automatically when Tavus ships the field.
-
   const result = {
     ok: true,
     persona_id: personaId,
+    version: "2.0",
     callback_url: callbackUrl,
     patched_fields: [],
     warnings: [],
     jordan_objectives_count: JORDAN_OBJECTIVES.length,
-    jordan_guardrails_count: buildJordanGuardrails(callbackUrl).length,
+    jordan_guardrails_count: JORDAN_GUARDRAILS.length,
   };
 
+  // ── Patch perception ────────────────────────────────────────────
   try {
-    const perceptionResult = await patchPersona(personaId, [
-      { op: "replace", path: "/layers/perception", value: JORDAN_PERCEPTION },
+    await patchPersona(personaId, [
+      { op: "add", path: "/layers/perception", value: JORDAN_PERCEPTION_V2 },
     ]);
-    result.patched_fields.push("perception");
-    result.perception_tavus_response = perceptionResult;
+    result.patched_fields.push("perception_v2");
   } catch (e) {
-    try {
-      const perceptionResult = await patchPersona(personaId, [
-        { op: "add", path: "/layers/perception", value: JORDAN_PERCEPTION },
-      ]);
-      result.patched_fields.push("perception");
-      result.perception_strategy = "add";
-      result.perception_tavus_response = perceptionResult;
-    } catch (e2) {
-      result.ok = false;
-      result.perception_error = e2.message;
-    }
+    result.ok = false;
+    result.perception_error = e.message;
   }
+
+  // ── Attempt conversation_rules ──────────────────────────────────
+  // Tavus currently returns "Unknown field" for /conversation_rules.
+  // Objectives and guardrails are enforced via the system_prompt on
+  // the persona. This code stays ready for when Tavus ships native
+  // conversation_rules support.
+  const guardrailsWithCallback = JORDAN_GUARDRAILS.map((g) => ({
+    ...g,
+    callback_url: callbackUrl,
+  }));
 
   try {
     await patchPersona(personaId, [
@@ -230,14 +153,14 @@ module.exports = async (req, res) => {
         path: "/conversation_rules",
         value: {
           objectives: JORDAN_OBJECTIVES,
-          guardrails: buildJordanGuardrails(callbackUrl),
+          guardrails: guardrailsWithCallback,
         },
       },
     ]);
-    result.patched_fields.push("objectives", "guardrails");
+    result.patched_fields.push("objectives_v2", "guardrails_v2");
   } catch (e) {
     result.warnings.push(
-      "conversation_rules not accepted by current Tavus API — objectives/guardrails remain enforced via system_prompt. Error: " +
+      "conversation_rules not accepted by Tavus API — objectives/guardrails enforced via system_prompt. " +
         e.message.slice(0, 200)
     );
   }
