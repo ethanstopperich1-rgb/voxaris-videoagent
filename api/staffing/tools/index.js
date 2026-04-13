@@ -25,10 +25,15 @@ const { verifyWebhook } = require("../../../shared/webhook-verify");
 // Fields the persona is allowed to save via updateCandidateProfile. Anything
 // outside this allowlist gets stripped before we merge into the session so a
 // hallucinated tool arg can't overwrite conversation_id or status.
+// Fields the persona is allowed to save via save_candidate_screening.
+// v2.0 additions: narrative_summary, fit_signal, behavioral_response_quality,
+// contact_phone, contact_email (from objectives output_variables).
 const ALLOWED_CANDIDATE_FIELDS = [
   "full_name",
   "email",
   "phone",
+  "contact_phone",
+  "contact_email",
   "work_authorized",
   "years_experience",
   "most_recent_employer",
@@ -39,8 +44,21 @@ const ALLOWED_CANDIDATE_FIELDS = [
   "available_weekends",
   "earliest_start_date",
   "confirmed_physical_requirements",
+  "narrative_summary",
+  "fit_signal",
+  "behavioral_response_quality",
   "notes",
   "disqualified",
+];
+
+// Fields allowed for save_partial_screening (incomplete sessions).
+const ALLOWED_PARTIAL_FIELDS = [
+  "full_name",
+  "phone",
+  "email",
+  "reason_incomplete",
+  "data_collected",
+  "notes",
 ];
 
 async function handleGet(req, res) {
@@ -156,7 +174,16 @@ async function processWebhookAsync(payload) {
     merged.objectives_completed = completed;
     merged.last_objective = payload.objective_name;
 
-    // Disqualified branch
+    // v2.0: graceful no-consent close — candidate declined AI interview
+    if (payload.objective_name === "graceful_no_consent_close") {
+      merged.status = "consent_declined";
+      merged.completed_at = new Date().toISOString();
+      await putSession(conversationId, merged);
+      await logStaffingSession(merged);
+      return;
+    }
+
+    // Disqualified branch (v1 legacy + v2.0 work_authorization denial)
     if (payload.objective_name === "end_screening_ineligible") {
       merged.disqualified = true;
       merged.status = "disqualified";
@@ -175,7 +202,36 @@ async function processWebhookAsync(payload) {
       return;
     }
 
-    // Terminal success
+    // v2.0: warm_close is the new terminal success objective
+    if (payload.objective_name === "warm_close") {
+      merged.recruiter_call_scheduled = true;
+      merged.status = "completed";
+      merged.completed_at = new Date().toISOString();
+      await putSession(conversationId, merged);
+      await triggerN8n(process.env.N8N_INTERVIEW_WEBHOOK, {
+        disqualified: false,
+        full_name: merged.full_name || merged.candidate_name || "",
+        email: merged.email || merged.contact_email || "",
+        phone: merged.phone || merged.contact_phone || "",
+        work_authorized: merged.work_authorized || "",
+        years_experience: merged.years_experience || "",
+        most_recent_employer: merged.most_recent_employer || "",
+        certifications: merged.certifications || [],
+        available_evenings: merged.available_evenings || false,
+        available_weekends: merged.available_weekends || false,
+        earliest_start_date: merged.earliest_start_date || "",
+        confirmed_physical_requirements:
+          merged.confirmed_physical_requirements || false,
+        narrative_summary: merged.narrative_summary || "",
+        fit_signal: merged.fit_signal || "",
+        behavioral_response_quality: merged.behavioral_response_quality || "",
+        conversation_id: conversationId,
+      });
+      await logStaffingSession(merged);
+      return;
+    }
+
+    // Terminal success (v1 legacy — keep for backward compat)
     if (payload.objective_name === "closing_confirmed") {
       merged.recruiter_call_scheduled = true;
       merged.status = "completed";
@@ -263,6 +319,36 @@ async function processWebhookAsync(payload) {
           message: `Got it — saved ${fieldsSaved.length} field${fieldsSaved.length === 1 ? "" : "s"}. Keep going with the next question.`,
         }),
       ]);
+      return;
+    }
+
+    // v2.0: save_partial_screening — incomplete sessions (disconnect, timeout, etc.)
+    if (payload.tool_name === "save_partial_screening") {
+      const partialParams = {};
+      const partialFieldsSaved = [];
+      for (const k of Object.keys(rawParams)) {
+        if (ALLOWED_PARTIAL_FIELDS.includes(k)) {
+          partialParams[k] = rawParams[k];
+          partialFieldsSaved.push(k);
+        }
+      }
+      const partialMerged = {
+        ...existing,
+        ...partialParams,
+        status: "incomplete",
+        reason_incomplete: partialParams.reason_incomplete || "unknown",
+        completed_at: new Date().toISOString(),
+      };
+      await Promise.all([
+        putSession(conversationId, partialMerged),
+        sendToolResult(conversationId, payload.tool_call_id, {
+          success: true,
+          fields_saved: partialFieldsSaved,
+          next_action: "end_session",
+          message: "Partial screening data saved. Session marked as incomplete.",
+        }),
+      ]);
+      await logStaffingSession(partialMerged);
       return;
     }
 
