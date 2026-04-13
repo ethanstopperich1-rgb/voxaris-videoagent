@@ -132,7 +132,7 @@
     },
     "tts": {
       "tts_engine": "cartesia",
-      "external_voice_id": "f24ae0b7-a3d2-4dd1-89df-959bdc4ab179",
+      "external_voice_id": "a167e0f3-df7e-4d52-a9c3-f949145efdab",
       "tts_emotion_control": true,
       "tts_model_name": "sonic-3",
       "voice_settings": {},

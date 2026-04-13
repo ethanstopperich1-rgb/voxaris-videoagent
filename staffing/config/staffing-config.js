@@ -393,7 +393,7 @@ function buildPersonaPayload() {
         tts_emotion_control: true,
         external_voice_id:
           process.env.CARTESIA_VOICE_ID_JORDAN ||
-          "f24ae0b7-a3d2-4dd1-89df-959bdc4ab179",
+          "a167e0f3-df7e-4d52-a9c3-f949145efdab",
         voice_settings: {},
         pronunciation_dictionary_id: null,
       },
