@@ -25,6 +25,7 @@ const {
 const { triggerN8n } = require("../../../shared/n8n-trigger");
 const { logRealtySession } = require("../../../realty/lib/sheets-logger");
 const { verifyWebhook } = require("../../../shared/webhook-verify");
+const { handlePostCallEvent } = require("../../../shared/post-call-handler");
 
 const TERMINAL_OBJECTIVES = new Set(["closing_confirmed"]);
 const BOOK_TOUR_OBJECTIVES = new Set(["schedule_agent_call"]);
@@ -64,6 +65,11 @@ async function processWebhookAsync(payload) {
   const conversationId =
     payload.conversation_id || payload.conversationId || null;
   if (!conversationId) return;
+
+  // Post-call events (transcript, perception, recording, shutdown)
+  // get routed to the shared handler and stored in call_records.
+  const handled = await handlePostCallEvent(payload, "realty");
+  if (handled) return;
 
   const existing = (await getSession(conversationId)) || {
     conversation_id: conversationId,

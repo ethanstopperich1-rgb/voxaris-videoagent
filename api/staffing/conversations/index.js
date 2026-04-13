@@ -36,6 +36,7 @@ const https = require("https");
 const { config } = require("../../../staffing/config/staffing-config");
 const { buildRoleContext } = require("../../../staffing/lib/role-context");
 const { putSession } = require("../../../shared/session-store");
+const { forwardToDashboard } = require("../../../shared/dashboard-webhook");
 
 const TAVUS_HOST = "tavusapi.com";
 const MAX_RESUME_CHARS = 12000; // safety cap on resume text injection
@@ -309,6 +310,20 @@ module.exports = async (req, res) => {
     } catch (e) {
       console.warn("putSession seed failed:", e.message);
     }
+
+    // Forward interview_started to the Voxaris Dashboard
+    forwardToDashboard("interview_started", conversationId, {
+      candidate_name: candidate_name || "Unknown",
+      candidate_email: email || null,
+      candidate_phone: phone || null,
+      applied_role: roleData.title,
+      resume_text: resume_text || null,
+      years_experience: years_experience || null,
+      most_recent_employer: most_recent_employer || null,
+      consent_given: consent_given === true,
+      consent_timestamp: consent_timestamp || null,
+      source: "video_interview",
+    }).catch(() => {});
 
     res.status(200).json({
       ok: true,

@@ -62,6 +62,49 @@ alter table webhook_dlq enable row level security;
 
 
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+--  CALL RECORDS — post-call data from Tavus webhooks
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+create table if not exists call_records (
+  conversation_id  text primary key,
+  vertical         text not null default 'unknown',
+  status           text not null default 'active',  -- active, completed, error
+  shutdown_reason  text,                             -- max_duration, participant_left, etc.
+
+  -- Transcript (application.transcription_ready)
+  transcript       jsonb,                            -- [{role, content}, ...]
+  transcript_at    timestamptz,
+
+  -- Perception analysis (application.perception_analysis)
+  perception       text,                             -- free-text analysis from Raven-1
+  perception_at    timestamptz,
+
+  -- Recording (application.recording_ready)
+  recording_key    text,                             -- S3 key from Tavus
+  recording_at     timestamptz,
+
+  -- Session metadata (pulled from sessions table on first event)
+  candidate_name   text,
+  applied_role     text,
+  agency_name      text,
+  email            text,
+
+  -- Timestamps
+  started_at       timestamptz,
+  ended_at         timestamptz,
+  duration_seconds integer,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now()
+);
+
+-- Dashboard queries: most recent first, filter by vertical
+create index if not exists call_records_updated_idx on call_records (updated_at desc);
+create index if not exists call_records_vertical_idx on call_records (vertical);
+create index if not exists call_records_status_idx on call_records (status);
+
+alter table call_records enable row level security;
+
+
+-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 --  HELPER: auto-update updated_at on sessions
 -- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 create or replace function update_updated_at()
@@ -75,5 +118,11 @@ $$ language plpgsql;
 drop trigger if exists sessions_updated_at_trigger on sessions;
 create trigger sessions_updated_at_trigger
   before update on sessions
+  for each row
+  execute function update_updated_at();
+
+drop trigger if exists call_records_updated_at_trigger on call_records;
+create trigger call_records_updated_at_trigger
+  before update on call_records
   for each row
   execute function update_updated_at();

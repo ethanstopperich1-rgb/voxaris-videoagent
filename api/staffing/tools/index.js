@@ -21,6 +21,8 @@ const {
 const { triggerN8n } = require("../../../shared/n8n-trigger");
 const { logStaffingSession } = require("../../../staffing/lib/sheets-logger");
 const { verifyWebhook } = require("../../../shared/webhook-verify");
+const { handlePostCallEvent } = require("../../../shared/post-call-handler");
+const { forwardToDashboard } = require("../../../shared/dashboard-webhook");
 
 // Fields the persona is allowed to save via updateCandidateProfile. Anything
 // outside this allowlist gets stripped before we merge into the session so a
@@ -103,6 +105,11 @@ async function processWebhookAsync(payload) {
     payload.conversation_id || payload.conversationId || null;
   if (!conversationId) return;
 
+  // Post-call events (transcript, perception, recording, shutdown)
+  // get routed to the shared handler and stored in call_records.
+  const handled = await handlePostCallEvent(payload, "staffing");
+  if (handled) return;
+
   // Tavus 2026 Interactions Protocol — seq is a globally monotonic
   // sequence number for out-of-order event reconciliation; turn_idx
   // groups all events within the same conversational turn. Gemini
@@ -152,6 +159,11 @@ async function processWebhookAsync(payload) {
       last_guardrail_at: new Date().toISOString(),
     };
     await putSession(conversationId, updated);
+    // Forward to dashboard
+    forwardToDashboard("guardrail_triggered", conversationId, {
+      guardrail: payload.guardrail_name,
+      triggered_at: new Date().toISOString(),
+    }).catch(() => {});
     return;
   }
 
@@ -173,6 +185,18 @@ async function processWebhookAsync(payload) {
     }
     merged.objectives_completed = completed;
     merged.last_objective = payload.objective_name;
+
+    // Forward every objective to the dashboard
+    forwardToDashboard("objective_completed", conversationId, {
+      objective: payload.objective_name,
+      output_variables: payload.output_variables || {},
+      event_log_entry: seq !== null ? {
+        seq,
+        turn_idx: turnIdx,
+        event: payload.objective_name,
+        timestamp: new Date().toISOString(),
+      } : undefined,
+    }).catch(() => {});
 
     // v2.0: graceful no-consent close — candidate declined AI interview
     if (payload.objective_name === "graceful_no_consent_close") {
